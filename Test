@@ -1,0 +1,139 @@
+// ==================== CRYPTO GAME EINZELDATEI ====================
+
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const crypto = require("crypto");
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+// ---------- JOIN CODE ----------
+const JOIN_CODE = "H7k9X2CryptoSecret2026"; // Ändern auf deinen geheimen Code
+
+// ---------- USERS & BLOCKCHAIN ----------
+let users = {};      // name -> user {name, coins}
+let blockchain = []; // Array von Blöcken
+
+// ---------- CREATE BLOCK ----------
+function createBlock(data){
+    const prevHash = blockchain.length ? blockchain[blockchain.length-1].hash : "0";
+    const hash = crypto.createHash("sha256")
+        .update(JSON.stringify(data)+prevHash+Date.now())
+        .digest("hex");
+    blockchain.push({data, prevHash, hash});
+}
+
+// ---------- SERVE STATIC HTML ----------
+app.get("/", (req,res)=>{
+    res.send(`
+<!DOCTYPE html>
+<html>
+<body>
+
+<h2>Privates Crypto Game</h2>
+
+<input id="name" placeholder="Name">
+<input id="code" placeholder="Join Code">
+<button onclick="login()">Login</button>
+
+<div id="game" style="display:none">
+    <h3 id="coins"></h3>
+    <button onclick="mine()">⛏ Mine Coins</button>
+    <div id="players"></div>
+    <h4>Blockchain:</h4>
+    <pre id="chain"></pre>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io();
+let myName;
+
+function login(){
+    socket.emit("login", {
+        name: document.getElementById("name").value,
+        code: document.getElementById("code").value
+    });
+}
+
+socket.on("denied", () => alert("Falscher Code"));
+
+socket.on("success", user => {
+    myName = user.name;
+    document.getElementById("game").style.display = "block";
+});
+
+socket.on("update", users => {
+    let me = users.find(u=>u.name===myName);
+    document.getElementById("coins").innerText = "Coins: " + me.coins;
+
+    document.getElementById("players").innerHTML = users.map(u=>
+        \`\${u.name} (\${u.coins})
+        \${u.name!==myName?`<button onclick="send('`+u.name+`')">Senden 10</button>`:''}\`
+    ).join("<br>");
+});
+
+socket.on("chain", chain=>{
+    document.getElementById("chain").innerText = JSON.stringify(chain,null,2);
+});
+
+function send(name){
+    socket.emit("send", {target:name, amount:10});
+}
+
+function mine(){
+    socket.emit("mine");
+}
+</script>
+
+</body>
+</html>
+    `);
+});
+
+// ---------- SOCKET.IO ----------
+io.on("connection", socket=>{
+    
+    socket.on("login", ({name, code})=>{
+        if(code!==JOIN_CODE){
+            socket.emit("denied");
+            return;
+        }
+        if(!users[name]){
+            users[name] = {name, coins:100};
+        }
+        socket.user = users[name];
+        socket.emit("success", socket.user);
+        io.emit("update", Object.values(users));
+        io.emit("chain", blockchain);
+    });
+
+    socket.on("send", ({target, amount})=>{
+        const from = socket.user;
+        const to = users[target];
+        if(!from || !to) return;
+        if(from.coins<amount) return;
+
+        from.coins -= amount;
+        to.coins += amount;
+
+        createBlock({from: from.name, to: to.name, amount, type:"transfer"});
+        io.emit("update", Object.values(users));
+        io.emit("chain", blockchain);
+    });
+
+    socket.on("mine", ()=>{
+        const miner = socket.user;
+        if(!miner) return;
+        const reward = Math.floor(Math.random()*10)+5;
+        miner.coins += reward;
+
+        createBlock({miner: miner.name, reward, type:"mine"});
+        io.emit("update", Object.values(users));
+        io.emit("chain", blockchain);
+    });
+});
+
+// ---------- START SERVER ----------
+server.listen(3000, ()=>console.log("Server läuft auf http://localhost:3000"));
